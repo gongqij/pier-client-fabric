@@ -155,12 +155,72 @@ func (c *Client) Initialize(configPath string, extra []byte, mode string) error 
 
 func (c *Client) Start() error {
 	logger.Info("Fabric consumer started")
+	err := c.initServiceMeta()
+	if err != nil {
+		logger.Error("client do service meta init error: %s", err.Error())
+		return err
+	}
 	go c.polling()
 	return nil
 }
 
+func (c *Client) initServiceMeta() error {
+	outMeta, err := c.GetOutMeta()
+	if err != nil {
+		logger.Error("client get outMeta error: %s", err.Error())
+		return err
+	}
+	inMeta, err := c.GetInMeta()
+	if err != nil {
+		logger.Error("client get inMeta error: %s", err.Error())
+		return err
+	}
+	for servicePair, index := range outMeta {
+		// 这里的src是我自己
+		meta, _, dstChainServiceID, err := c.ensureGetServiceMeta(servicePair)
+		if err != nil {
+			return err
+		}
+		meta.InterchainCounter[dstChainServiceID] = index
+	}
+	for servicePair, index := range inMeta {
+		// 这里的src是对端链，dst是我自己
+		meta, _, dstChainServiceID, err := c.ensureGetServiceMeta(servicePair)
+		if err != nil {
+			return err
+		}
+		meta.ReceiptCounter[dstChainServiceID] = index
+	}
+	return nil
+}
+
+func (c *Client) ensureGetServiceMeta(servicePair string) (*pb.Interchain, string, string, error) {
+	srcChainServiceID, dstChainServiceID, err := parseServicePair(servicePair)
+	if err != nil {
+		logger.Error("Polling out invalid service pair",
+			"servicePair", servicePair,
+			"error", err.Error())
+		return nil, srcChainServiceID, dstChainServiceID, err
+	}
+	meta, ok := c.serviceMeta[srcChainServiceID]
+	if !ok {
+		meta = &pb.Interchain{
+			ID:                      srcChainServiceID,
+			InterchainCounter:       make(map[string]uint64),
+			ReceiptCounter:          make(map[string]uint64),
+			SourceInterchainCounter: make(map[string]uint64),
+			SourceReceiptCounter:    make(map[string]uint64),
+		}
+		c.serviceMeta[srcChainServiceID] = meta
+	}
+	return c.serviceMeta[srcChainServiceID], srcChainServiceID, dstChainServiceID, nil
+}
+
 // polling event from broker
 func (c *Client) polling() {
+	// firstEnter is used to mark this round logic is recover or need init
+	// if pier first start, all meta should be assigned as ledger value, and pier.recover() will handle missing events
+	// and during that phase, all already-in-ledger meta will be assigned to
 	for {
 		select {
 		case <-c.ticker.C:
@@ -201,9 +261,10 @@ func (c *Client) polling() {
 					// }
 
 					// c.eventC <- ibtp
-					meta.InterchainCounter[dstChainServiceID] = index
-					continue
+					//meta.InterchainCounter[dstChainServiceID] = index
+					//continue
 				}
+				meta.InterchainCounter[dstChainServiceID] = 0
 
 				for i := meta.InterchainCounter[dstChainServiceID] + 1; i <= index; i++ {
 					ibtp, err := c.GetOutMessage(servicePair, i)
@@ -238,19 +299,20 @@ func (c *Client) polling() {
 						SourceReceiptCounter:    make(map[string]uint64),
 					}
 					c.serviceMeta[srcChainServiceID] = meta
-					ibtp, err := c.GetReceiptMessage(servicePair, index)
-					if err != nil {
-						logger.Error("Polling out message",
-							"servicePair", servicePair,
-							"index", index,
-							"error", err.Error())
-						continue
-					}
-
-					c.eventC <- ibtp
-					meta.ReceiptCounter[dstChainServiceID] = index
-					continue
+					//ibtp, err := c.GetReceiptMessage(servicePair, index)
+					//if err != nil {
+					//	logger.Error("Polling out message",
+					//		"servicePair", servicePair,
+					//		"index", index,
+					//		"error", err.Error())
+					//	continue
+					//}
+					//
+					//c.eventC <- ibtp
+					//meta.ReceiptCounter[dstChainServiceID] = index
+					//continue
 				}
+				meta.ReceiptCounter[dstChainServiceID] = 0
 
 				for i := meta.ReceiptCounter[dstChainServiceID] + 1; i <= index; i++ {
 					ibtp, err := c.GetReceiptMessage(servicePair, i)
@@ -690,7 +752,7 @@ func (c *Client) GetOutMeta() (map[string]uint64, error) {
 	return c.unpackMap(response)
 }
 
-func (c Client) GetCallbackMeta() (map[string]uint64, error) {
+func (c *Client) GetCallbackMeta() (map[string]uint64, error) {
 	request := channel.Request{
 		ChaincodeID: c.meta.CCID,
 		Fcn:         GetCallbackMetaMethod,
