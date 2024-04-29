@@ -132,8 +132,8 @@ func (transaction *Transaction) registerAppchain(stub shim.ChaincodeStubInterfac
 	appchain := Appchain{
 		Id:        chainID,
 		Broker:    args[1],
-		TrustRoot: args[2],
-		RuleAddr:  args[3],
+		RuleAddr:  args[2],
+		TrustRoot: args[3],
 		Status:    1,
 		Exist:     true,
 	}

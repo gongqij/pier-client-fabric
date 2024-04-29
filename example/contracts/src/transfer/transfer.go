@@ -189,16 +189,17 @@ func (t *Transfer) setBalance(stub shim.ChaincodeStubInterface, args []string) p
 
 // charge user,amount
 func (t *Transfer) interchainCharge(stub shim.ChaincodeStubInterface, args []string) pb.Response {
-	if len(args) != 4 {
+	if len(args) != 3 {
 		return shim.Error("incorrect number of arguments, expect 3")
 	}
-
-	sender := args[0]
-	receiver := args[1]
-	var amountArg uint64
-	buf := bytes.NewBuffer([]byte(args[2]))
-	binary.Read(buf, binary.BigEndian, &amountArg)
-	isRollback := args[3]
+	callArgs := strings.Split(args[1], `"`)
+	sender := callArgs[1]
+	receiver := callArgs[3]
+	transferAmountArg, err := strconv.ParseUint(callArgs[5], 10, 64)
+	if err != nil {
+		return shim.Error(fmt.Errorf("strconv.ParseUint meet err: %w", err).Error())
+	}
+	isRollback := args[2]
 
 	// check for sender info
 	if sender == "" {
@@ -212,9 +213,9 @@ func (t *Transfer) interchainCharge(stub shim.ChaincodeStubInterface, args []str
 
 	// TODO: deal with rollback failure (balance not enough)
 	if isRollback == "true" {
-		balance -= amountArg
+		balance -= transferAmountArg
 	} else {
-		balance += amountArg
+		balance += transferAmountArg
 	}
 	err = stub.PutState(receiver, []byte(strconv.FormatUint(balance, 10)))
 	if err != nil {
