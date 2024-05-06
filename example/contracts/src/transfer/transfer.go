@@ -1,8 +1,6 @@
 package main
 
 import (
-	"bytes"
-	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"strconv"
@@ -125,14 +123,13 @@ func (t *Transfer) transfer(stub shim.ChaincodeStubInterface, args []string) pb.
 		}
 
 		var callArgs, argsRb [][]byte
+		transferAmount := strconv.FormatUint(amount, 10)
 		callArgs = append(callArgs, []byte(sender))
 		callArgs = append(callArgs, []byte(receiver))
-		transferAmount := make([]byte, 8)
-		binary.BigEndian.PutUint64(transferAmount, amount)
-		callArgs = append(callArgs, transferAmount[:])
+		callArgs = append(callArgs, []byte(transferAmount))
 
 		argsRb = append(argsRb, []byte(sender))
-		argsRb = append(argsRb, transferAmount[:])
+		argsRb = append(argsRb, []byte(transferAmount))
 
 		callArgsBytes, err := json.Marshal(callArgs)
 		if err != nil {
@@ -189,13 +186,18 @@ func (t *Transfer) setBalance(stub shim.ChaincodeStubInterface, args []string) p
 
 // charge user,amount
 func (t *Transfer) interchainCharge(stub shim.ChaincodeStubInterface, args []string) pb.Response {
-	if len(args) != 3 {
+	//["java.util.List<java.lang.String>",`["daming","xiaoming","10"]`,"false"]
+	callArgs := make([]string, 3)
+	err := json.Unmarshal([]byte(args[1]), &callArgs)
+	if err != nil {
+		return shim.Error(err.Error())
+	}
+	if len(callArgs) != 3 {
 		return shim.Error("incorrect number of arguments, expect 3")
 	}
-	callArgs := strings.Split(args[1], `"`)
-	sender := callArgs[1]
-	receiver := callArgs[3]
-	transferAmountArg, err := strconv.ParseUint(callArgs[5], 10, 64)
+	sender := callArgs[0]
+	receiver := callArgs[1]
+	transferAmount, err := strconv.ParseUint(callArgs[2], 10, 64)
 	if err != nil {
 		return shim.Error(fmt.Errorf("strconv.ParseUint meet err: %w", err).Error())
 	}
@@ -213,9 +215,9 @@ func (t *Transfer) interchainCharge(stub shim.ChaincodeStubInterface, args []str
 
 	// TODO: deal with rollback failure (balance not enough)
 	if isRollback == "true" {
-		balance -= transferAmountArg
+		balance -= transferAmount
 	} else {
-		balance += transferAmountArg
+		balance += transferAmount
 	}
 	err = stub.PutState(receiver, []byte(strconv.FormatUint(balance, 10)))
 	if err != nil {
@@ -226,21 +228,25 @@ func (t *Transfer) interchainCharge(stub shim.ChaincodeStubInterface, args []str
 }
 
 func (t *Transfer) interchainRollback(stub shim.ChaincodeStubInterface, args []string) pb.Response {
-	if len(args) != 2 {
+	//["java.util.List<java.lang.String>",`["sender","amount"]`,"true"]
+	rollbackCallArgs := make([]string, 2)
+	err := json.Unmarshal([]byte(args[1]), &rollbackCallArgs)
+	if err != nil {
+		return shim.Error(err.Error())
+	}
+	if len(rollbackCallArgs) != 2 {
 		return shim.Error("incorrect number of arguments, expecting 2")
 	}
 
-	name := args[0]
-	var amountArg uint64
-	buf := bytes.NewBuffer([]byte(args[1]))
-	binary.Read(buf, binary.BigEndian, &amountArg)
+	name := rollbackCallArgs[0]
+	transferAmount, err := strconv.ParseUint(rollbackCallArgs[1], 10, 64)
 
 	balance, err := getUint64(stub, name)
 	if err != nil {
 		return shim.Error(fmt.Errorf("get balancee from %s %w", name, err).Error())
 	}
 
-	balance += amountArg
+	balance += transferAmount
 	err = stub.PutState(name, []byte(strconv.FormatUint(balance, 10)))
 	if err != nil {
 		return shim.Error(err.Error())
