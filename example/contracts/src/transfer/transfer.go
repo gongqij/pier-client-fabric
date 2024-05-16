@@ -122,25 +122,31 @@ func (t *Transfer) transfer(stub shim.ChaincodeStubInterface, args []string) pb.
 			return shim.Error(err.Error())
 		}
 
-		var callArgs, argsRb [][]byte
+		var argsRb [][]byte
+		var callArgs []string
 		transferAmount := strconv.FormatUint(amount, 10)
-		callArgs = append(callArgs, []byte(sender))
-		callArgs = append(callArgs, []byte(receiver))
-		callArgs = append(callArgs, []byte(transferAmount))
-
-		argsRb = append(argsRb, []byte(sender))
-		argsRb = append(argsRb, []byte(transferAmount))
-
+		callArgs = append(callArgs, sender)
+		callArgs = append(callArgs, receiver)
+		callArgs = append(callArgs, transferAmount)
 		callArgsBytes, err := json.Marshal(callArgs)
 		if err != nil {
 			return shim.Error(err.Error())
 		}
+		var typAndArgs [][]byte
+		typAndArgs = append(typAndArgs, []byte("java.util.List<java.lang.String>"), callArgsBytes)
+		typAndArgsBytes, err := json.Marshal(typAndArgs)
+		if err != nil {
+			return shim.Error(err.Error())
+		}
+
+		argsRb = append(argsRb, []byte(sender))
+		argsRb = append(argsRb, []byte(transferAmount))
 		argsRbBytes, err := json.Marshal(argsRb)
 		if err != nil {
 			return shim.Error(err.Error())
 		}
 
-		b := util.ToChaincodeArgs(emitInterchainEventFunc, dstServiceID, "interchainCharge", string(callArgsBytes), "", "", "interchainRollback", string(argsRbBytes), strconv.FormatBool(false))
+		b := util.ToChaincodeArgs(emitInterchainEventFunc, dstServiceID, "interchainCharge", string(typAndArgsBytes), "", "", "interchainRollback", string(argsRbBytes), strconv.FormatBool(false))
 		response := stub.InvokeChaincode(brokerContractName, b, channelID)
 		if response.Status != shim.OK {
 			return shim.Error(fmt.Errorf("invoke broker chaincode: %d - %s", response.Status, response.Message).Error())
