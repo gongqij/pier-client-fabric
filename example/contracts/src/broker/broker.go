@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/hyperledger/fabric/common/util"
 	"strconv"
@@ -21,6 +22,7 @@ const (
 	outterMeta              = "outter-meta"
 	callbackMeta            = "callback-meta"
 	dstRollbackMeta         = "dst-rollback-meta"
+	rollbackCacheMeta       = "rollback-cache-meta"
 	localWhitelist          = "local-whitelist"
 	remoteWhitelist         = "remote-whitelist"
 	localServices           = "local-services"
@@ -260,6 +262,7 @@ func (broker *Broker) initMap(stub shim.ChaincodeStubInterface) error {
 	initOutMessages := make(map[string](map[uint64]Event))
 	initReceiptMessage := make(map[string](map[uint64]Receipt))
 	serviceOrdered := make(map[string]bool)
+	rollbackCache := make(map[string][]uint64)
 	var validators []string
 	if err != nil {
 		return err
@@ -290,6 +293,15 @@ func (broker *Broker) initMap(stub shim.ChaincodeStubInterface) error {
 	}
 
 	if err := broker.putMap(stub, dstRollbackMeta, dstRollbackCounter); err != nil {
+		return err
+	}
+
+	rcBytes, err := json.Marshal(rollbackCache)
+	if err != nil {
+		return err
+	}
+
+	if err := stub.PutState(rollbackCacheMeta, rcBytes); err != nil {
 		return err
 	}
 
@@ -689,9 +701,121 @@ func (broker *Broker) updateIndex(stub shim.ChaincodeStubInterface, srcFullID, d
 				return err
 			}
 		}
+	} else if reqType == 3 {
+		// condition reqType == 3 means "directType && receipt_rollback"
+		// change require as callbackCounter[servicePair] + 1 <= index,
+		// then if index correct, directly update,
+		// otherwise, temporary store in rollbackCache;
+		meta, err := broker.getMap(stub, callbackMeta)
+		if err != nil {
+			return err
+		}
+		if index < meta[servicePair]+1 {
+			return fmt.Errorf("incorrect index, expect param index[%d] should be larger or equal than %d", index, meta[servicePair]+1)
+		}
+		if index == meta[servicePair]+1 {
+			if merr := broker.markCallbackCounter(stub, servicePair, index); merr != nil {
+				return merr
+			}
+		} else {
+			rcMapBytes, err := stub.GetState(rollbackCacheMeta)
+			if err != nil {
+				return err
+			}
+			var rcMap = make(map[string][]uint64)
+			umerr := json.Unmarshal(rcMapBytes, &rcMap)
+			if umerr != nil {
+				return umerr
+			}
+			if rcMap[servicePair] == nil {
+				rcMap[servicePair] = make([]uint64, 0)
+			}
+			rcMap[servicePair] = append(rcMap[servicePair], index)
+			rcMapBytes, err = json.Marshal(rcMap)
+			if err != nil {
+				return err
+			}
+			err = stub.PutState(rollbackCacheMeta, rcMapBytes)
+			if err != nil {
+				return err
+			}
+		}
+	} else if reqType == 4 {
+		rcMapBytes, err := stub.GetState(rollbackCacheMeta)
+		if err != nil {
+			return err
+		}
+		var rcMap = make(map[string][]uint64)
+		umerr := json.Unmarshal(rcMapBytes, &rcMap)
+		if umerr != nil {
+			return umerr
+		}
+		if rcMap[servicePair] != nil && len(rcMap[servicePair]) != 0 && rcMap[servicePair][0] == index {
+			// firstly, move callbackCounter update into this func;
+			//secondly, remove first element in rollbackCache[servicePair];
+			if err := broker.markCallbackCounter(stub, servicePair, index); err != nil {
+				return err
+			}
+			if len(rcMap[servicePair]) == 1 {
+				delete(rcMap, servicePair)
+			} else {
+				rcMap[servicePair] = rcMap[servicePair][1:]
+			}
+			rcMapBytes, err = json.Marshal(rcMap)
+			if err != nil {
+				return err
+			}
+			err = stub.PutState(rollbackCacheMeta, rcMapBytes)
+			if err != nil {
+				return err
+			}
+		} else {
+			var (
+				cachedFirst uint64 = 0
+				cacheLength uint64 = 0
+			)
+			if rcMap[servicePair] != nil {
+				cacheLength = uint64(len(rcMap[servicePair]))
+				if len(rcMap[servicePair]) != 0 {
+					cachedFirst = rcMap[servicePair][0]
+				}
+			}
+			msg := &RollbackIndexError{
+				CacheLength:  cacheLength,
+				CachedFirst:  cachedFirst,
+				CurrentIndex: index,
+			}
+			jMsg, err := json.Marshal(msg)
+			if err != nil {
+				return err
+			}
+			return errors.New(string(jMsg))
+		}
+
+		//if (rollbackCache[servicePair].length != 0 && rollbackCache[servicePair][0] == index) {
+		//	markCallbackCounter(servicePair, index);
+		//	// firstly, move callbackCounter update into this func;
+		//	// secondly, remove first element in rollbackCache[servicePair];
+		//	for (uint256 i=0; i<rollbackCache[servicePair].length - 1; i++) {
+		//		rollbackCache[servicePair][i] = rollbackCache[servicePair][i+1];
+		//	}
+		//	rollbackCache[servicePair].pop();
+		//} else {
+		//	uint64 cacheFirst = 0;
+		//	if (rollbackCache[servicePair].length != 0) {
+		//		cacheFirst = rollbackCache[servicePair][0];
+		//	}
+		//	emit throwRollbackIndexError(uint64(rollbackCache[servicePair].length), cacheFirst, index);
+		//}
 	}
 
 	return nil
+}
+
+type RollbackIndexError struct {
+	CacheLength  uint64
+	CachedFirst  uint64
+	CurrentIndex uint64
 }
 
 func (broker *Broker) invokeIndexUpdate(stub shim.ChaincodeStubInterface, args []string) pb.Response {
@@ -1036,6 +1160,11 @@ func (broker *Broker) invokeReceipt(stub shim.ChaincodeStubInterface, args []str
 			if response.Status != shim.OK {
 				return shim.Error(fmt.Errorf("invoke transaction chaincode: %d - %s", response.Status, response.Message).Error())
 			}
+			err = broker.updateIndex(stub, srcFullID, dstFullID, index, 4)
+			if err != nil {
+				return errorResponse(err.Error())
+			}
+			return successResponse([]byte{})
 		}
 	} else {
 		if txStatus != 0 && txStatus != 3 {
@@ -1045,7 +1174,12 @@ func (broker *Broker) invokeReceipt(stub shim.ChaincodeStubInterface, args []str
 
 	// }
 
-	err = broker.updateIndex(stub, srcFullID, dstFullID, index, txStatus)
+	if threshold == 0 && typ == 3 {
+		err = broker.updateIndex(stub, srcFullID, dstFullID, index, 3)
+	} else {
+		err = broker.updateIndex(stub, srcFullID, dstFullID, index, 1)
+	}
+
 	if err != nil {
 		return errorResponse(err.Error())
 	}
