@@ -3,7 +3,6 @@ package main
 import (
 	"encoding/binary"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"github.com/hyperledger/fabric/common/util"
 	"strconv"
@@ -789,7 +788,8 @@ func (broker *Broker) updateIndex(stub shim.ChaincodeStubInterface, srcFullID, d
 			if err != nil {
 				return err
 			}
-			return errors.New(string(jMsg))
+			fmt.Printf("indexUpdate with type==4, and got %s\n", string(jMsg))
+			return nil
 		}
 
 		//if (rollbackCache[servicePair].length != 0 && rollbackCache[servicePair][0] == index) {
