@@ -259,6 +259,7 @@ func (t *Transfer) transferLadingBillCrossParamsCallBack(stub shim.ChaincodeStub
 
 func (t *Transfer) ladingBillCrossChainCall(stub shim.ChaincodeStubInterface, args []string) pb.Response {
 	callArgs := make([]string, 1)
+	//注意：args[0]为参数类型，非实际参数
 	err := json.Unmarshal([]byte(args[1]), &callArgs)
 	if err != nil {
 		return shim.Error(err.Error())
