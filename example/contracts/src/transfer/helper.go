@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"strconv"
 
@@ -33,4 +34,50 @@ func getAmountArg(arg string) (uint64, error) {
 	}
 
 	return amount, nil
+}
+
+func (t *Transfer) getLadingBillCrossParamsMap(stub shim.ChaincodeStubInterface) (map[string]ladingBillCrossParams, error) {
+	ladingBillCrossMapBytes, err := stub.GetState(ladingBillsCrossParamsMapKey)
+	if err != nil {
+		return nil, err
+	}
+	ladingBillsMap := make(map[string]ladingBillCrossParams)
+	if ladingBillCrossMapBytes == nil {
+		return ladingBillsMap, nil
+	}
+	if err := json.Unmarshal(ladingBillCrossMapBytes, &ladingBillsMap); err != nil {
+		return nil, err
+	}
+	return ladingBillsMap, nil
+}
+
+func (t *Transfer) putLadingBillCrossParamsMap(stub shim.ChaincodeStubInterface, ladingBillsMap map[string]ladingBillCrossParams) error {
+	ladingBillsMapBytes, err := json.Marshal(ladingBillsMap)
+	if err != nil {
+		return err
+	}
+	return stub.PutState(ladingBillsCrossParamsMapKey, ladingBillsMapBytes)
+}
+
+func (t *Transfer) getCrossChainStatusMap(stub shim.ChaincodeStubInterface) (map[string]CrossChainStatus, error) {
+	crossChainStatusMapBytes, err := stub.GetState(crossChainStatusKey)
+	if err != nil {
+		return nil, err
+	}
+	crossChainStatusMap := make(map[string]CrossChainStatus)
+	if crossChainStatusMapBytes == nil {
+		return crossChainStatusMap, nil
+	}
+	if err := json.Unmarshal(crossChainStatusMapBytes, &crossChainStatusMap); err != nil {
+		return nil, err
+	}
+	return crossChainStatusMap, nil
+}
+
+func (t *Transfer) putCrossChainStatusMap(stub shim.ChaincodeStubInterface, crossChainStatusMap map[string]CrossChainStatus) error {
+	crossChainStatusMapBytes, err := json.Marshal(crossChainStatusMap)
+	if err != nil {
+		return err
+	}
+	return stub.PutState(crossChainStatusKey, crossChainStatusMapBytes)
 }

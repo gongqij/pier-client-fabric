@@ -1209,6 +1209,7 @@ func (broker *Broker) invokeReceipt(stub shim.ChaincodeStubInterface, args []str
 		funcArgs = append(funcArgs, result...)
 	}
 
+	//TODO 空的callBack也会走这里？
 	cid := strings.Split(messages[outServicePair][index].SrcFullID, ":")
 	splitedCID := strings.Split(cid[2], delimiter)
 	if len(splitedCID) != 2 {
