@@ -77,8 +77,12 @@ func (t *Transfer) issueLadingBillCrossParams(stub shim.ChaincodeStubInterface, 
 		return shim.Error("call issueLadingBillCrossParams meet error:" + err.Error())
 	}
 
-	if ladingBillCrossParamsObject.CrossChainID == "" {
-		return shim.Error("call issueLadingBillCrossParams meet error: crossChainID can not be empty")
+	if ladingBillCrossParamsObject.LadingBillNumber == "" {
+		return shim.Error("call issueLadingBillCrossParams meet error: ladingBillNumber can not be empty")
+	}
+
+	if ladingBillCrossParamsObject.LadingBillCR.Tdbh != ladingBillCrossParamsObject.LadingBillNumber {
+		return shim.Error("call issueLadingBillCrossParams meet error:ladingBill info error")
 	}
 
 	ladingBillCrossParamsMap, err := t.getLadingBillCrossParamsMap(stub)
@@ -91,31 +95,26 @@ func (t *Transfer) issueLadingBillCrossParams(stub shim.ChaincodeStubInterface, 
 		return shim.Error(fmt.Sprintf("call issueLadingBillCrossParams meet error: %s", err.Error()))
 	}
 
-	//以下情况不允许更新提单
-	//1、跨链转发成功的提单不允许更新
-	_, ok := ladingBillCrossParamsMap[ladingBillCrossParamsObject.CrossChainID]
-	if ok && crossChainStatusMap[ladingBillCrossParamsObject.CrossChainID] == CrossChainReceiptReceived {
-		return shim.Error(fmt.Sprintf("this ladingBillCrossParams has been forward and update is not allowed,crossChainID:%s", ladingBillCrossParamsObject.CrossChainID))
-	}
-	//2、跨链接收到的提单不允许更新
-	if ok && crossChainStatusMap[ladingBillCrossParamsObject.CrossChainID] == CrossChainReceiptSent {
-		return shim.Error(fmt.Sprintf("this ladingBillCrossParams received from partner and update is not allowed,crossChainID:%s", ladingBillCrossParamsObject.CrossChainID))
+	//跨链接收到的提单不允许更新
+	_, ok := ladingBillCrossParamsMap[ladingBillCrossParamsObject.LadingBillNumber]
+	if ok && crossChainStatusMap[ladingBillCrossParamsObject.LadingBillNumber] == CrossChainReceiptSent {
+		return shim.Error(fmt.Sprintf("this ladingBillCrossParams received from partner and update is not allowed,ladingBillNumber:%s", ladingBillCrossParamsObject.LadingBillNumber))
 	}
 
 	//change cross chain status
-	crossChainStatusMap[ladingBillCrossParamsObject.CrossChainID] = CrossChainOnChain
+	crossChainStatusMap[ladingBillCrossParamsObject.LadingBillNumber] = CrossChainOnChain
 
 	err = t.putCrossChainStatusMap(stub, crossChainStatusMap)
 	if err != nil {
 		return shim.Error(err.Error())
 	}
 
-	ladingBillCrossParamsMap[ladingBillCrossParamsObject.CrossChainID] = ladingBillCrossParamsObject
+	ladingBillCrossParamsMap[ladingBillCrossParamsObject.LadingBillNumber] = ladingBillCrossParamsObject
 	err = t.putLadingBillCrossParamsMap(stub, ladingBillCrossParamsMap)
 	if err != nil {
 		return shim.Error(err.Error())
 	}
-	return shim.Success([]byte(ladingBillCrossParamsObject.CrossChainID))
+	return shim.Success([]byte(ladingBillCrossParamsObject.LadingBillNumber))
 }
 
 // queryLadingBillCrossParams query lading bill cross params
@@ -123,16 +122,16 @@ func (t *Transfer) queryLadingBillCrossParams(stub shim.ChaincodeStubInterface, 
 	if len(args) != 1 {
 		return shim.Error("call queryLadingBillCrossParams meet error: incorrect number of arguments")
 	}
-	crossChainID := args[0]
+	ladingBillNumber := args[0]
 
 	ladingBillCrossParamsMap, err := t.getLadingBillCrossParamsMap(stub)
 	if err != nil {
 		return shim.Error(fmt.Sprintf("call queryLadingBillCrossParams meet error: %s", err.Error()))
 	}
 
-	ladingBillCrossParamsObject, ok := ladingBillCrossParamsMap[crossChainID]
+	ladingBillCrossParamsObject, ok := ladingBillCrossParamsMap[ladingBillNumber]
 	if !ok {
-		return shim.Success([]byte("crossChainID:" + crossChainID + " not found"))
+		return shim.Success([]byte("ladingBillNumber:" + ladingBillNumber + " not found"))
 	}
 	ladingBillCrossParamsBytes, err := json.Marshal(ladingBillCrossParamsObject)
 	return shim.Success(ladingBillCrossParamsBytes)
@@ -143,13 +142,13 @@ func (t *Transfer) queryCrossChainStatus(stub shim.ChaincodeStubInterface, args 
 	if len(args) != 1 {
 		return shim.Error("call queryCrossChainStatus meet error: incorrect number of arguments")
 	}
-	crossChainID := args[0]
+	ladingBillNumber := args[0]
 
 	crossChainStatusMap, err := t.getCrossChainStatusMap(stub)
 	if err != nil {
 		return shim.Error(fmt.Sprintf("call queryCrossChainStatus meet error: %s", err.Error()))
 	}
-	status := crossChainStatusMap[crossChainID]
+	status := crossChainStatusMap[ladingBillNumber]
 
 	return shim.Success([]byte(status.String()))
 }
@@ -160,16 +159,16 @@ func (t *Transfer) transferLadingBillCrossParams(stub shim.ChaincodeStubInterfac
 		return shim.Error("call transferLadingBillCrossParams meet error: incorrect number of arguments")
 	}
 	dstServiceID := args[0]
-	crossChainID := args[1]
+	ladingBillNumber := args[1]
 
 	ladingBillCrossParamsMap, err := t.getLadingBillCrossParamsMap(stub)
 	if err != nil {
 		return shim.Error(fmt.Sprintf("call transferLadingBillCrossParams meet error: %s", err.Error()))
 	}
 
-	ladingBillCrossParamsObject, ok := ladingBillCrossParamsMap[crossChainID]
+	ladingBillCrossParamsObject, ok := ladingBillCrossParamsMap[ladingBillNumber]
 	if !ok {
-		return shim.Success([]byte(crossChainID + " not found"))
+		return shim.Success([]byte(ladingBillNumber + " not found"))
 	}
 
 	ladingBillCrossParamsBytes, err := json.Marshal(ladingBillCrossParamsObject)
@@ -189,14 +188,14 @@ func (t *Transfer) transferLadingBillCrossParams(stub shim.ChaincodeStubInterfac
 	}
 
 	var argsRb [][]byte
-	argsRb = append(argsRb, []byte(crossChainID))
+	argsRb = append(argsRb, []byte(ladingBillNumber))
 	argsRbBytes, err := json.Marshal(argsRb)
 	if err != nil {
 		return shim.Error(err.Error())
 	}
 
 	var argsCb [][]byte
-	argsCb = append(argsCb, []byte(crossChainID))
+	argsCb = append(argsCb, []byte(ladingBillNumber))
 	argsCbBytes, err := json.Marshal(argsCb)
 	if err != nil {
 		return shim.Error(err.Error())
@@ -214,7 +213,7 @@ func (t *Transfer) transferLadingBillCrossParams(stub shim.ChaincodeStubInterfac
 	if err != nil {
 		return shim.Error(fmt.Sprintf("call issueLadingBillCrossParams meet error: %s", err.Error()))
 	}
-	crossChainStatusMap[ladingBillCrossParamsObject.CrossChainID] = CrossChainForwarded
+	crossChainStatusMap[ladingBillCrossParamsObject.LadingBillNumber] = CrossChainForwarded
 
 	err = t.putCrossChainStatusMap(stub, crossChainStatusMap)
 	if err != nil {
@@ -224,14 +223,14 @@ func (t *Transfer) transferLadingBillCrossParams(stub shim.ChaincodeStubInterfac
 }
 
 func (t *Transfer) transferLadingBillCrossParamsRollback(stub shim.ChaincodeStubInterface, args []string) pb.Response {
-	crossChainID := args[0]
+	ladingBillNumber := args[0]
 
 	//change cross chain status
 	crossChainStatusMap, err := t.getCrossChainStatusMap(stub)
 	if err != nil {
 		return shim.Error(fmt.Sprintf("call transferLadingBillCrossParamsRollback meet error: %s", err.Error()))
 	}
-	crossChainStatusMap[crossChainID] = CrossChainRollback
+	crossChainStatusMap[ladingBillNumber] = CrossChainRollback
 
 	err = t.putCrossChainStatusMap(stub, crossChainStatusMap)
 	if err != nil {
@@ -241,14 +240,14 @@ func (t *Transfer) transferLadingBillCrossParamsRollback(stub shim.ChaincodeStub
 }
 
 func (t *Transfer) transferLadingBillCrossParamsCallBack(stub shim.ChaincodeStubInterface, args []string) pb.Response {
-	crossChainID := args[0]
+	ladingBillNumber := args[0]
 
 	//change cross chain status
 	crossChainStatusMap, err := t.getCrossChainStatusMap(stub)
 	if err != nil {
 		return shim.Error(fmt.Sprintf("call transferLadingBillCrossParamsCallBack meet error: %s", err.Error()))
 	}
-	crossChainStatusMap[crossChainID] = CrossChainReceiptReceived
+	crossChainStatusMap[ladingBillNumber] = CrossChainReceiptReceived
 
 	err = t.putCrossChainStatusMap(stub, crossChainStatusMap)
 	if err != nil {
@@ -279,20 +278,20 @@ func (t *Transfer) ladingBillCrossChainCall(stub shim.ChaincodeStubInterface, ar
 		return shim.Error(fmt.Sprintf("call ladingBillCrossChainCall meet error: %s", err.Error()))
 	}
 
-	//crossChainID存在且crossChainStatus不等于CrossChainReceiptSent,说明该提单是本侧未跨链转发的新提单，对端不能跨链覆盖
-	_, ok := ladingBillCrossParamsMap[ladingBillCrossParamsObject.CrossChainID]
-	if ok && crossChainStatusMap[ladingBillCrossParamsObject.CrossChainID] != CrossChainReceiptSent {
-		return shim.Error(fmt.Sprintf("call ladingBillCrossChainCall meet error:crossChainID %s already exist!", ladingBillCrossParamsObject.CrossChainID))
+	//LadingBillNumber存在且crossChainStatus不等于CrossChainReceiptSent,说明该提单是本侧未跨链转发的新提单，对端不能跨链覆盖
+	_, ok := ladingBillCrossParamsMap[ladingBillCrossParamsObject.LadingBillNumber]
+	if ok && crossChainStatusMap[ladingBillCrossParamsObject.LadingBillNumber] != CrossChainReceiptSent {
+		return shim.Error(fmt.Sprintf("call ladingBillCrossChainCall meet error:LadingBillNumber %s already exist!", ladingBillCrossParamsObject.LadingBillNumber))
 	}
 
-	ladingBillCrossParamsMap[ladingBillCrossParamsObject.CrossChainID] = ladingBillCrossParamsObject
+	ladingBillCrossParamsMap[ladingBillCrossParamsObject.LadingBillNumber] = ladingBillCrossParamsObject
 	err = t.putLadingBillCrossParamsMap(stub, ladingBillCrossParamsMap)
 	if err != nil {
 		return shim.Error(err.Error())
 	}
 
 	//change cross chain status
-	crossChainStatusMap[ladingBillCrossParamsObject.CrossChainID] = CrossChainReceiptSent
+	crossChainStatusMap[ladingBillCrossParamsObject.LadingBillNumber] = CrossChainReceiptSent
 
 	err = t.putCrossChainStatusMap(stub, crossChainStatusMap)
 	if err != nil {
