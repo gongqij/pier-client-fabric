@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
+	"github.com/google/uuid"
 	"github.com/hyperledger/fabric/common/util"
 	"github.com/hyperledger/fabric/core/chaincode/shim"
 	pb "github.com/hyperledger/fabric/protos/peer"
@@ -36,6 +38,8 @@ func (t *Transfer) Invoke(stub shim.ChaincodeStubInterface) pb.Response {
 		return t.register(stub, args)
 	case "issueLadingBillCrossParams":
 		return t.issueLadingBillCrossParams(stub, args)
+	case "removeLadingBillCrossParams":
+		return t.removeLadingBillCrossParams(stub, args)
 	case "queryLadingBillCrossParams":
 		return t.queryLadingBillCrossParams(stub, args)
 	case "queryCrossChainStatus":
@@ -76,13 +80,8 @@ func (t *Transfer) issueLadingBillCrossParams(stub shim.ChaincodeStubInterface, 
 	if err := json.Unmarshal([]byte(ladingBillCrossParamsJsonStr), &ladingBillCrossParamsObject); err != nil {
 		return shim.Error("call issueLadingBillCrossParams meet error:" + err.Error())
 	}
-
-	if ladingBillCrossParamsObject.LadingBillNumber == "" {
-		return shim.Error("call issueLadingBillCrossParams meet error: ladingBillNumber can not be empty")
-	}
-
-	if ladingBillCrossParamsObject.LadingBillCR.Tdbh != ladingBillCrossParamsObject.LadingBillNumber {
-		return shim.Error("call issueLadingBillCrossParams meet error:ladingBill info error")
+	if ladingBillCrossParamsObject.LadingBillCR.Tdbh == "" {
+		return shim.Error("call issueLadingBillCrossParams meet error:tdbh can not be empty")
 	}
 
 	ladingBillCrossParamsMap, err := t.getLadingBillCrossParamsMap(stub)
@@ -96,25 +95,61 @@ func (t *Transfer) issueLadingBillCrossParams(stub shim.ChaincodeStubInterface, 
 	}
 
 	//跨链接收到的提单不允许更新
-	_, ok := ladingBillCrossParamsMap[ladingBillCrossParamsObject.LadingBillNumber]
-	if ok && crossChainStatusMap[ladingBillCrossParamsObject.LadingBillNumber] == CrossChainReceiptSent {
-		return shim.Error(fmt.Sprintf("this ladingBillCrossParams received from partner and update is not allowed,ladingBillNumber:%s", ladingBillCrossParamsObject.LadingBillNumber))
+	oldLadingBillCrossParamsObject, ok := ladingBillCrossParamsMap[ladingBillCrossParamsObject.LadingBillCR.Tdbh]
+	if ok && crossChainStatusMap[ladingBillCrossParamsObject.LadingBillCR.Tdbh] == CrossChainReceiptSent {
+		return shim.Error(fmt.Sprintf("this ladingBillCrossParams received from partner and update is not allowed,ladingBillNumber:%s", ladingBillCrossParamsObject.LadingBillCR.Tdbh))
+	}
+
+	//不能更新被冻结的提单
+	if ok && oldLadingBillCrossParamsObject.Freeze {
+		return shim.Error(fmt.Sprintf("this ladingBillCrossParams has been frozen and update is not allowed,ladingBillNumber:%s", ladingBillCrossParamsObject.LadingBillCR.Tdbh))
 	}
 
 	//change cross chain status
-	crossChainStatusMap[ladingBillCrossParamsObject.LadingBillNumber] = CrossChainOnChain
-
+	crossChainStatusMap[ladingBillCrossParamsObject.LadingBillCR.Tdbh] = CrossChainOnChain
 	err = t.putCrossChainStatusMap(stub, crossChainStatusMap)
 	if err != nil {
 		return shim.Error(err.Error())
 	}
 
-	ladingBillCrossParamsMap[ladingBillCrossParamsObject.LadingBillNumber] = ladingBillCrossParamsObject
+	ladingBillCrossParamsMap[ladingBillCrossParamsObject.LadingBillCR.Tdbh] = ladingBillCrossParamsObject
 	err = t.putLadingBillCrossParamsMap(stub, ladingBillCrossParamsMap)
 	if err != nil {
 		return shim.Error(err.Error())
 	}
-	return shim.Success([]byte(ladingBillCrossParamsObject.LadingBillNumber))
+	return shim.Success([]byte(ladingBillCrossParamsObject.LadingBillCR.Tdbh))
+}
+
+// removeLadingBillCrossParams remove lading bill cross params
+func (t *Transfer) removeLadingBillCrossParams(stub shim.ChaincodeStubInterface, args []string) pb.Response {
+	if len(args) != 1 {
+		return shim.Error("call removeLadingBillCrossParams meet error: incorrect number of arguments")
+	}
+	ladingBillNumber := args[0]
+
+	ladingBillCrossParamsMap, err := t.getLadingBillCrossParamsMap(stub)
+	if err != nil {
+		return shim.Error(fmt.Sprintf("call removeLadingBillCrossParams meet error: %s", err.Error()))
+	}
+
+	crossChainStatusMap, err := t.getCrossChainStatusMap(stub)
+	if err != nil {
+		return shim.Error(fmt.Sprintf("call removeLadingBillCrossParams meet error: %s", err.Error()))
+	}
+
+	//change cross chain status
+	delete(crossChainStatusMap, ladingBillNumber)
+	err = t.putCrossChainStatusMap(stub, crossChainStatusMap)
+	if err != nil {
+		return shim.Error(err.Error())
+	}
+
+	delete(ladingBillCrossParamsMap, ladingBillNumber)
+	err = t.putLadingBillCrossParamsMap(stub, ladingBillCrossParamsMap)
+	if err != nil {
+		return shim.Error(err.Error())
+	}
+	return shim.Success([]byte(ladingBillNumber))
 }
 
 // queryLadingBillCrossParams query lading bill cross params
@@ -171,6 +206,17 @@ func (t *Transfer) transferLadingBillCrossParams(stub shim.ChaincodeStubInterfac
 		return shim.Success([]byte(ladingBillNumber + " not found"))
 	}
 
+	//若提单被冻结，无法转发
+	if ladingBillCrossParamsObject.Freeze {
+		return shim.Error(fmt.Sprintf("this ladingBillCrossParams has been frozen and transfer is not allowed,ladingBillNumber:%s", ladingBillCrossParamsObject.LadingBillCR.Tdbh))
+	}
+
+	//每次跨链转发提单都赋予唯一的跨链ID及时间戳
+	ladingBillCrossParamsObject.CrossChainID = uuid.New().String()
+	ladingBillCrossParamsObject.Timestamp = time.Now().Unix()
+	//跨链转发-回退完成期间，冻结提单
+	ladingBillCrossParamsObject.Freeze = true
+
 	ladingBillCrossParamsBytes, err := json.Marshal(ladingBillCrossParamsObject)
 
 	var callArgs []string
@@ -208,14 +254,19 @@ func (t *Transfer) transferLadingBillCrossParams(stub shim.ChaincodeStubInterfac
 		return shim.Error(fmt.Errorf("invoke broker chaincode: %d - %s", response.Status, response.Message).Error())
 	}
 
-	//change cross chain status
+	//跨链转发期间，修改跨链状态为forward
 	crossChainStatusMap, err := t.getCrossChainStatusMap(stub)
 	if err != nil {
 		return shim.Error(fmt.Sprintf("call issueLadingBillCrossParams meet error: %s", err.Error()))
 	}
-	crossChainStatusMap[ladingBillCrossParamsObject.LadingBillNumber] = CrossChainForwarded
+	crossChainStatusMap[ladingBillCrossParamsObject.LadingBillCR.Tdbh] = CrossChainForwarded
 
 	err = t.putCrossChainStatusMap(stub, crossChainStatusMap)
+	if err != nil {
+		return shim.Error(err.Error())
+	}
+	ladingBillCrossParamsMap[ladingBillCrossParamsObject.LadingBillCR.Tdbh] = ladingBillCrossParamsObject
+	err = t.putLadingBillCrossParamsMap(stub, ladingBillCrossParamsMap)
 	if err != nil {
 		return shim.Error(err.Error())
 	}
@@ -225,7 +276,7 @@ func (t *Transfer) transferLadingBillCrossParams(stub shim.ChaincodeStubInterfac
 func (t *Transfer) transferLadingBillCrossParamsRollback(stub shim.ChaincodeStubInterface, args []string) pb.Response {
 	ladingBillNumber := args[0]
 
-	//change cross chain status
+	//跨链失败，修改跨链状态为rollback
 	crossChainStatusMap, err := t.getCrossChainStatusMap(stub)
 	if err != nil {
 		return shim.Error(fmt.Sprintf("call transferLadingBillCrossParamsRollback meet error: %s", err.Error()))
@@ -233,6 +284,23 @@ func (t *Transfer) transferLadingBillCrossParamsRollback(stub shim.ChaincodeStub
 	crossChainStatusMap[ladingBillNumber] = CrossChainRollback
 
 	err = t.putCrossChainStatusMap(stub, crossChainStatusMap)
+	if err != nil {
+		return shim.Error(err.Error())
+	}
+	//跨链失败，解冻提单
+	ladingBillCrossParamsMap, err := t.getLadingBillCrossParamsMap(stub)
+	if err != nil {
+		return shim.Error(fmt.Sprintf("call transferLadingBillCrossParams meet error: %s", err.Error()))
+	}
+
+	ladingBillCrossParamsObject, ok := ladingBillCrossParamsMap[ladingBillNumber]
+	if !ok {
+		return shim.Success([]byte(ladingBillNumber + " not found"))
+	}
+
+	ladingBillCrossParamsObject.Freeze = false
+	ladingBillCrossParamsMap[ladingBillCrossParamsObject.LadingBillCR.Tdbh] = ladingBillCrossParamsObject
+	err = t.putLadingBillCrossParamsMap(stub, ladingBillCrossParamsMap)
 	if err != nil {
 		return shim.Error(err.Error())
 	}
@@ -278,20 +346,34 @@ func (t *Transfer) ladingBillCrossChainCall(stub shim.ChaincodeStubInterface, ar
 		return shim.Error(fmt.Sprintf("call ladingBillCrossChainCall meet error: %s", err.Error()))
 	}
 
-	//LadingBillNumber存在且crossChainStatus不等于CrossChainReceiptSent,说明该提单是本侧未跨链转发的新提单，对端不能跨链覆盖
-	_, ok := ladingBillCrossParamsMap[ladingBillCrossParamsObject.LadingBillNumber]
-	if ok && crossChainStatusMap[ladingBillCrossParamsObject.LadingBillNumber] != CrossChainReceiptSent {
-		return shim.Error(fmt.Sprintf("call ladingBillCrossChainCall meet error:LadingBillNumber %s already exist!", ladingBillCrossParamsObject.LadingBillNumber))
+	//提单存在且crossChainStatus不等于CrossChainReceiptSent,说明该提单是本侧未跨链转发的新提单，对端不能跨链覆盖
+	_, ok := ladingBillCrossParamsMap[ladingBillCrossParamsObject.LadingBillCR.Tdbh]
+	if ok && crossChainStatusMap[ladingBillCrossParamsObject.LadingBillCR.Tdbh] != CrossChainReceiptSent {
+		return shim.Error(fmt.Sprintf("call ladingBillCrossChainCall meet error:tdbh %s already exist!", ladingBillCrossParamsObject.LadingBillCR.Tdbh))
 	}
 
-	ladingBillCrossParamsMap[ladingBillCrossParamsObject.LadingBillNumber] = ladingBillCrossParamsObject
+	//如果是跨链回退，解冻原提单
+	oldLadingBillNumber := strings.TrimSuffix(ladingBillCrossParamsObject.LadingBillCR.Tdbh, "-back")
+	if oldLadingBillNumber != ladingBillCrossParamsObject.LadingBillCR.Tdbh {
+		oldLadingBillCrossParamsObject, ok := ladingBillCrossParamsMap[oldLadingBillNumber]
+		if ok {
+			oldLadingBillCrossParamsObject.Freeze = false
+			ladingBillCrossParamsMap[oldLadingBillNumber] = oldLadingBillCrossParamsObject
+			err = t.putLadingBillCrossParamsMap(stub, ladingBillCrossParamsMap)
+			if err != nil {
+				return shim.Error(fmt.Sprintf("call ladingBillCrossChainCall:unfreeze meet error:%s", err.Error()))
+			}
+		}
+	}
+
+	ladingBillCrossParamsMap[ladingBillCrossParamsObject.LadingBillCR.Tdbh] = ladingBillCrossParamsObject
 	err = t.putLadingBillCrossParamsMap(stub, ladingBillCrossParamsMap)
 	if err != nil {
 		return shim.Error(err.Error())
 	}
 
 	//change cross chain status
-	crossChainStatusMap[ladingBillCrossParamsObject.LadingBillNumber] = CrossChainReceiptSent
+	crossChainStatusMap[ladingBillCrossParamsObject.LadingBillCR.Tdbh] = CrossChainReceiptSent
 
 	err = t.putCrossChainStatusMap(stub, crossChainStatusMap)
 	if err != nil {

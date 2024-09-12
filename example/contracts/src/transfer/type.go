@@ -42,9 +42,11 @@ type ladingBillInfo struct {
 }
 
 type ladingBillCrossParams struct {
-	LadingBillNumber       string         `json:"ladingBillNumber"`       // 跨链唯一标识
+	CrossChainID           string         `json:"crossChainID"`           // 跨链唯一标识
 	CorpHolderOrgCode      string         `json:"corpHolderOrgCode"`      // 持有企业组代号
 	FinanceReceiverOrgCode string         `json:"financeReceiverOrgCode"` // 接收金融机构组代号
 	LadingBillCR           ladingBillInfo `json:"ladingBillCR"`           // 提单信息
+	Freeze                 bool           `json:"freeze"`                 // 是否被冻结
+	Timestamp              int64          `json:"timestamp"`              // 时间戳
 	Memo                   string         `json:"memo"`                   // 附言
 }
