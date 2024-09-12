@@ -698,11 +698,13 @@ func (c *Client) GetInMessage(servicePair string, index uint64) ([][]byte, []byt
 	var response channel.Response
 	response, err := c.consumer.ChannelClient.Execute(request)
 	if err != nil {
+		logger.Error("GetInMessage:ChannelClient.Execute error: %s", err.Error())
 		return nil, nil, false, 0, fmt.Errorf("execute req: %w", err)
 	}
 
 	resp := &Receipt{}
 	if err := json.Unmarshal(response.Payload, resp); err != nil {
+		logger.Error("GetInMessage:json.Unmarshal error: %s", err.Error())
 		return nil, nil, false, 0, err
 	}
 
@@ -714,6 +716,7 @@ func (c *Client) GetInMessage(servicePair string, index uint64) ([][]byte, []byt
 
 	proof, err := c.getProof(response)
 	if err != nil {
+		logger.Error("GetInMessage:getProof error: %s", err.Error())
 		return nil, nil, false, 0, err
 	}
 
