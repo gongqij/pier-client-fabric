@@ -66,6 +66,7 @@ type ladingBillInfo struct {
 	Qfrid     string `json:"qfrid"`     // 63、签发人代码
 	Qfrmc     string `json:"qfrmc"`     // 64、签发人名称
 	Ydlx      string `json:"ydlx"`      // 65、运单类型
+	Tdzt      string `json:"tdzt"`      // 66、提单状态
 }
 
 type ladingBillCrossParams struct {
