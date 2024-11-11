@@ -136,13 +136,12 @@ func (transaction *Transaction) compensateRemove(stub shim.ChaincodeStubInterfac
 	removed := make([]uint64, 0)
 	for cursor := index; cursor <= curIdx; cursor++ {
 		ibtpId := transaction.genIBTPid(fromFullService, destFullService, strconv.FormatUint(cursor, 10))
-		if _, ok := transactionStatus[ibtpId]; ok && transactionStatus[ibtpId] != 0 {
-			return shim.Error(fmt.Sprintf("Transaction [%s] is in status[%d], required status 0", ibtpId, transactionStatus[ibtpId]))
+		// 只能补偿缺失或者transaction_begin两个状态
+		if _, ok := transactionStatus[ibtpId]; ok && (transactionStatus[ibtpId] != 0 && transactionStatus[ibtpId] != 1) {
+			return shim.Error(fmt.Sprintf("Transaction [%s] is in status[%d], required status 0 or 1", ibtpId, transactionStatus[ibtpId]))
 		}
 		delete(transactionStatus, ibtpId)
-		if _, ok := startTimestamp[ibtpId]; ok {
-			delete(transactionStatus, ibtpId)
-		}
+		delete(startTimestamp, ibtpId)
 		removed = append(removed, cursor)
 	}
 	pserr := transaction.putMap(stub, transactionStatusMeta, transactionStatus)
