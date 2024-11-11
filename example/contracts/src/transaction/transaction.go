@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/golang/protobuf/ptypes/timestamp"
@@ -102,9 +103,58 @@ func (transaction *Transaction) Invoke(stub shim.ChaincodeStubInterface) pb.Resp
 		return transaction.getTransactionStatus(stub, args)
 	case "getStartTimestamp":
 		return transaction.getStartTimestamp(stub, args)
+	case "compensateRemove":
+		return transaction.compensateRemove(stub, args)
 	default:
 		return shim.Error("invalid function: " + function + ", args: " + strings.Join(args, ","))
 	}
+}
+
+func (transaction *Transaction) compensateRemove(stub shim.ChaincodeStubInterface, args []string) pb.Response {
+	if len(args) != 4 {
+		return shim.Error("incorrect number of arguments, expecting 4")
+	}
+	fromFullService := args[0]
+	destFullService := args[1]
+	index, perr := strconv.ParseUint(args[2], 10, 64)
+	if perr != nil {
+		return shim.Error(fmt.Sprintf("args[2] cannot convert to uint64 number: %s", perr.Error()))
+	}
+	curIdx, perr := strconv.ParseUint(args[3], 10, 64)
+	if perr != nil {
+		return shim.Error(fmt.Sprintf("args[3] cannot convert to uint64 number: %s", perr.Error()))
+	}
+	// 从index开始到curIdx为止闭区间删除所有的事务记录和timestamp记录
+	transactionStatus, err := transaction.getMap(stub, transactionStatusMeta)
+	if err != nil {
+		return shim.Error(fmt.Sprintf("get transactionStatusMeta error: %s", err.Error()))
+	}
+	startTimestamp, err := transaction.getStartTimeStampMeta(stub)
+	if err != nil {
+		return shim.Error(fmt.Sprintf("get startTimestampMeta error: %s", err.Error()))
+	}
+	removed := make([]uint64, 0)
+	for cursor := index; cursor <= curIdx; cursor++ {
+		ibtpId := transaction.genIBTPid(fromFullService, destFullService, strconv.FormatUint(cursor, 10))
+		if _, ok := transactionStatus[ibtpId]; ok && transactionStatus[ibtpId] != 0 {
+			return shim.Error(fmt.Sprintf("Transaction [%s] is in status[%d], required status 0", ibtpId, transactionStatus[ibtpId]))
+		}
+		delete(transactionStatus, ibtpId)
+		if _, ok := startTimestamp[ibtpId]; ok {
+			delete(transactionStatus, ibtpId)
+		}
+		removed = append(removed, cursor)
+	}
+	pserr := transaction.putMap(stub, transactionStatusMeta, transactionStatus)
+	if pserr != nil {
+		return shim.Error(fmt.Sprintf("Transaction put transactionStatusMeta state map error: %s", pserr.Error()))
+	}
+	pserr = transaction.setStartTimeStampMeta(stub, startTimestamp)
+	if pserr != nil {
+		return shim.Error(fmt.Sprintf("Transaction put startTimestampMeta state map error: %s", pserr.Error()))
+	}
+	removedBytes, _ := json.Marshal(removed)
+	return shim.Success(removedBytes)
 }
 
 func (transaction *Transaction) initialize(stub shim.ChaincodeStubInterface) pb.Response {

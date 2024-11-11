@@ -205,9 +205,79 @@ func (broker *Broker) Invoke(stub shim.ChaincodeStubInterface) pb.Response {
 		return broker.getRSWhiteList(stub, args)
 	case "getDirectTransactionMeta":
 		return broker.getDirectTransactionMeta(stub, args)
+	case "compensateRemove":
+		return broker.compensateRemove(stub, args)
 	default:
 		return shim.Error("invalid function: " + function + ", args: " + strings.Join(args, ","))
 	}
+}
+
+func (broker *Broker) compensateRemove(stub shim.ChaincodeStubInterface, args []string) pb.Response {
+	if len(args) != 3 {
+		return shim.Error("incorrect number of arguments, expecting 3")
+	}
+	// 参数为fromFullService、toFullService、index（包括这个index在内需要删除的起始点）
+	fromFullService := args[0]
+	destFullService := args[1]
+	index, perr := strconv.ParseUint(args[2], 10, 64)
+	if perr != nil {
+		return shim.Error(fmt.Sprintf("args[2] cannot convert to uint64 number: %s", perr.Error()))
+	}
+
+	outServicePair := genServicePair(fromFullService, destFullService)
+	outMeta, err := broker.getMap(stub, outterMeta)
+	if err != nil {
+		return shim.Error(fmt.Sprintf("get outterMeta state error: %s", err.Error()))
+	}
+	if _, ok := outMeta[outServicePair]; !ok {
+		outMeta[outServicePair] = 0
+	}
+	// curIdx是这一次删除的目标终点
+	curIdx := outMeta[outServicePair]
+	removed := make([]uint64, 0)
+	oMessages, err := broker.getOutMessages(stub)
+	if err != nil {
+		return shim.Error(fmt.Sprintf("get out messages: %s", err.Error()))
+	}
+	_, ok := oMessages[outServicePair]
+	if !ok {
+		oMessages[outServicePair] = make(map[uint64]Event)
+	}
+	// 从入参index开始，到curIdx为止，闭区间删除outMessage
+	for cursor := index; cursor <= curIdx; cursor++ {
+		delete(oMessages[outServicePair], cursor)
+		removed = append(removed, cursor)
+	}
+	// 直连模式下，删除transaction中所有该ibtpID相关
+	threshold, err := broker.getValThreshold(stub)
+	if err != nil {
+		return shim.Error(fmt.Sprintf("broker get valThreshold error: %s", err.Error()))
+	}
+	if threshold == 0 {
+		b := util.ToChaincodeArgs("compensateRemove", fromFullService, destFullService, strconv.FormatUint(index, 10), strconv.FormatUint(curIdx, 10))
+		resp := stub.InvokeChaincode(transactionContractName, b, channelID)
+		if resp.Status != shim.OK {
+			return shim.Error(fmt.Sprintf("invoke transaction.compensateRemove got response: %d - %s", resp.Status, resp.Message))
+		}
+	}
+	var newIndex uint64
+	if index == 0 {
+		newIndex = 0
+	} else {
+		newIndex = index - 1
+	}
+	outMeta[outServicePair] = newIndex
+	pserr := broker.putMap(stub, outterMeta, outMeta)
+	if pserr != nil {
+		return shim.Error(fmt.Sprintf("broker put outterMeta state map error: %s", pserr.Error()))
+	}
+	pserr = broker.setOutMessages(stub, oMessages)
+	if pserr != nil {
+		return shim.Error(fmt.Sprintf("broker put outMessages state map error: %s", pserr.Error()))
+	}
+	removedBytes, _ := json.Marshal(removed)
+	return shim.Success([]byte(fmt.Sprintf("compensate result: metaMap[%s]=%d, removed transactions and outMessages: %s",
+		outServicePair, newIndex, string(removedBytes))))
 }
 
 func (broker *Broker) initialize(stub shim.ChaincodeStubInterface, args []string) pb.Response {
