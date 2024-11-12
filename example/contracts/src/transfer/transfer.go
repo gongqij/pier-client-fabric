@@ -5,9 +5,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
-	"time"
 
-	"github.com/google/uuid"
 	"github.com/hyperledger/fabric/common/util"
 	"github.com/hyperledger/fabric/core/chaincode/shim"
 	pb "github.com/hyperledger/fabric/protos/peer"
@@ -212,8 +210,9 @@ func (t *Transfer) transferLadingBillCrossParams(stub shim.ChaincodeStubInterfac
 	}
 
 	//每次跨链转发提单都赋予唯一的跨链ID及时间戳
-	ladingBillCrossParamsObject.CrossChainID = uuid.New().String()
-	ladingBillCrossParamsObject.Timestamp = time.Now().Unix()
+	timestamp, _ := stub.GetTxTimestamp()
+	ladingBillCrossParamsObject.CrossChainID = strconv.FormatInt(int64(timestamp.GetNanos()), 10)
+	ladingBillCrossParamsObject.Timestamp = int64(timestamp.GetNanos())
 	//跨链转发-回退完成期间，冻结提单
 	ladingBillCrossParamsObject.Freeze = true
 
