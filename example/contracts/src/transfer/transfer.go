@@ -210,9 +210,9 @@ func (t *Transfer) transferLadingBillCrossParams(stub shim.ChaincodeStubInterfac
 	}
 
 	//每次跨链转发提单都赋予唯一的跨链ID及时间戳
-	timestamp, _ := stub.GetTxTimestamp()
-	ladingBillCrossParamsObject.CrossChainID = strconv.FormatInt(int64(timestamp.GetNanos()), 10)
-	ladingBillCrossParamsObject.Timestamp = int64(timestamp.GetNanos())
+	ladingBillCrossParamsObject.CrossChainID = stub.GetTxID()
+	txTimestamp, _ := stub.GetTxTimestamp()
+	ladingBillCrossParamsObject.Timestamp = txTimestamp.GetSeconds()
 	//跨链转发-回退完成期间，冻结提单
 	ladingBillCrossParamsObject.Freeze = true
 
