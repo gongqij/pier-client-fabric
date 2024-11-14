@@ -22,6 +22,7 @@ const (
 	callbackMeta            = "callback-meta"
 	dstRollbackMeta         = "dst-rollback-meta"
 	rollbackCacheMeta       = "rollback-cache-meta"
+	rollbackNotFinishMeta   = "rollback-not-finish"
 	localWhitelist          = "local-whitelist"
 	remoteWhitelist         = "remote-whitelist"
 	localServices           = "local-services"
@@ -207,9 +208,38 @@ func (broker *Broker) Invoke(stub shim.ChaincodeStubInterface) pb.Response {
 		return broker.getDirectTransactionMeta(stub, args)
 	case "compensateRemove":
 		return broker.compensateRemove(stub, args)
+	case "getRollbackNotFinish":
+		return broker.getRollbackNotFinish(stub, args)
 	default:
 		return shim.Error("invalid function: " + function + ", args: " + strings.Join(args, ","))
 	}
+}
+
+func (broker *Broker) getRollbackNotFinish(stub shim.ChaincodeStubInterface, args []string) pb.Response {
+	if len(args) != 2 {
+		return shim.Error("incorrect number of arguments, expecting 2")
+	}
+	srcFullID := args[0]
+	dstFullID := args[1]
+	servicePair := genServicePair(srcFullID, dstFullID)
+	rnfBytes, err := stub.GetState(rollbackNotFinishMeta)
+	if err != nil {
+		return shim.Error(fmt.Sprintf("get state %s error: %s", rollbackNotFinishMeta, err.Error()))
+	}
+	var rnfMap = make(map[string]map[uint64]bool)
+	umerr := json.Unmarshal(rnfBytes, &rnfMap)
+	if umerr != nil {
+		return shim.Error(fmt.Sprintf("unmarshal state %s error: %s", rollbackNotFinishMeta, err.Error()))
+	}
+	idxMap, exist := rnfMap[servicePair]
+	if !exist {
+		return shim.Success([]byte{})
+	}
+	idxMapBytes, err := json.Marshal(idxMap)
+	if err != nil {
+		return shim.Error(fmt.Sprintf("marshal idxMap for %s error: %s", rollbackNotFinishMeta, err.Error()))
+	}
+	return shim.Success(idxMapBytes)
 }
 
 func (broker *Broker) compensateRemove(stub shim.ChaincodeStubInterface, args []string) pb.Response {
@@ -332,6 +362,7 @@ func (broker *Broker) initMap(stub shim.ChaincodeStubInterface) error {
 	initReceiptMessage := make(map[string](map[uint64]Receipt))
 	serviceOrdered := make(map[string]bool)
 	rollbackCache := make(map[string][]uint64)
+	rollbackNotFinished := make(map[string]map[uint64]bool)
 	var validators []string
 	if err != nil {
 		return err
@@ -371,6 +402,15 @@ func (broker *Broker) initMap(stub shim.ChaincodeStubInterface) error {
 	}
 
 	if err := stub.PutState(rollbackCacheMeta, rcBytes); err != nil {
+		return err
+	}
+
+	rnfBytes, err := json.Marshal(rollbackNotFinished)
+	if err != nil {
+		return err
+	}
+
+	if err := stub.PutState(rollbackNotFinishMeta, rnfBytes); err != nil {
 		return err
 	}
 
@@ -809,13 +849,59 @@ func (broker *Broker) updateIndex(stub shim.ChaincodeStubInterface, srcFullID, d
 				return err
 			}
 		}
+		// 当前事务需要被标记为rollbackNotFinish，方便后续宕机重启后能够正常的恢复
+		rnfBytes, err := stub.GetState(rollbackNotFinishMeta)
+		if err != nil {
+			return err
+		}
+		var rnfMap = make(map[string]map[uint64]bool)
+		umerr := json.Unmarshal(rnfBytes, &rnfMap)
+		if umerr != nil {
+			return umerr
+		}
+		if rnfMap[servicePair] == nil {
+			rnfMap[servicePair] = make(map[uint64]bool)
+		}
+		rnfMap[servicePair][index] = true
+		rnfBytes, err = json.Marshal(rnfMap)
+		if err != nil {
+			return err
+		}
+		err = stub.PutState(rollbackNotFinishMeta, rnfBytes)
+		if err != nil {
+			return err
+		}
 	} else if reqType == 4 {
+		// 清除rollbackNotFinished
+		rnfBytes, err := stub.GetState(rollbackNotFinishMeta)
+		if err != nil {
+			return err
+		}
+		var rnfMap = make(map[string]map[uint64]bool)
+		umerr := json.Unmarshal(rnfBytes, &rnfMap)
+		if umerr != nil {
+			return umerr
+		}
+		if rnfMap[servicePair] == nil {
+			fmt.Printf("[ERROR] rnfMap not contains %s pair, but got rollbackEnd ibtp\n", servicePair)
+		} else {
+			delete(rnfMap[servicePair], index)
+		}
+		rnfBytes, err = json.Marshal(rnfMap)
+		if err != nil {
+			return err
+		}
+		err = stub.PutState(rollbackNotFinishMeta, rnfBytes)
+		if err != nil {
+			return err
+		}
+		// 处理rollbackCache
 		rcMapBytes, err := stub.GetState(rollbackCacheMeta)
 		if err != nil {
 			return err
 		}
 		var rcMap = make(map[string][]uint64)
-		umerr := json.Unmarshal(rcMapBytes, &rcMap)
+		umerr = json.Unmarshal(rcMapBytes, &rcMap)
 		if umerr != nil {
 			return umerr
 		}
@@ -1109,19 +1195,29 @@ func (broker *Broker) invokeInterchain(stub shim.ChaincodeStubInterface, args []
 		if err != nil {
 			return errorResponse(fmt.Sprintf("get in counter fail"))
 		}
-		if inCounter[ServicePair] >= index {
-			response = stub.InvokeChaincode(splitedCID[1], ccArgs, splitedCID[0])
-		}
-		if err := broker.updateIndex(stub, srcFullID, dstFullID, index, 2); err != nil {
+		dstrMeta, err := broker.getMap(stub, dstRollbackMeta)
+		if err != nil {
 			return errorResponse(err.Error())
 		}
-		if threshold == 0 {
-			typ = 4
+		if inCounter[ServicePair] >= index && dstrMeta[ServicePair] >= index {
+			// dstRollbackMeta肯定是从小到达增长的，一方面，接收方的pier只能按顺序处理消息，
+			// 即便是事务在发起方pier那就超时了，接收方pier也等到能处理这个index了，才会开始处理；
+			fmt.Printf("self is dest chain, and current RECEIPT_ROLLBACK ibtp has been processed, directly throw ReceiptEvent back\n")
 		} else {
-			if txStatus == 1 {
-				typ = 2
+			if inCounter[ServicePair] >= index {
+				response = stub.InvokeChaincode(splitedCID[1], ccArgs, splitedCID[0])
+			}
+			if err := broker.updateIndex(stub, srcFullID, dstFullID, index, 2); err != nil {
+				return errorResponse(err.Error())
+			}
+			if threshold == 0 {
+				typ = 4
 			} else {
-				typ = 3
+				if txStatus == 1 {
+					typ = 2
+				} else {
+					typ = 3
+				}
 			}
 		}
 	}

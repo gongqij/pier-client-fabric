@@ -106,7 +106,7 @@ type Receipt struct {
 	Result  peer.Response `json:"result"`
 }
 
-func (c *Client) Initialize(configPath string, extra []byte, mode string) error {
+func (c *Client) Initialize(configPath string, extra []byte) error {
 	eventC := make(chan *pb.IBTP)
 	config, err := UnmarshalConfig(configPath)
 	if err != nil {
@@ -981,4 +981,26 @@ func (c *Client) GetOffChainDataReq() chan *pb.GetDataRequest {
 func (c *Client) SubmitOffChainData(response *pb.GetDataResponse) error {
 	//TODO implement me
 	panic("implement me")
+}
+
+func (c *Client) GetRollbackNotFinish(srcFullID, dstFullID string) (map[uint64]bool, error) {
+	request := channel.Request{
+		ChaincodeID: c.meta.CCID,
+		Fcn:         "getRollbackNotFinish",
+		Args:        [][]byte{[]byte(srcFullID), []byte(dstFullID)},
+	}
+
+	response, err := c.consumer.ChannelClient.Query(request)
+	if err != nil {
+		return nil, err
+	}
+	if len(response.Payload) == 0 {
+		return map[uint64]bool{}, nil
+	}
+	var res map[uint64]bool
+	umerr := json.Unmarshal(response.Payload, &res)
+	if umerr != nil {
+		return nil, umerr
+	}
+	return res, nil
 }
