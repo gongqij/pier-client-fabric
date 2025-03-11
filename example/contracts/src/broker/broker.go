@@ -234,6 +234,11 @@ func (broker *Broker) compensateRemove(stub shim.ChaincodeStubInterface, args []
 	}
 	// curIdx是这一次删除的目标终点
 	curIdx := outMeta[outServicePair]
+
+	if index > curIdx {
+		return shim.Error(fmt.Sprintf("invalid operation, current index:%d, expect index:%d", curIdx, index))
+	}
+
 	removed := make([]uint64, 0)
 	oMessages, err := broker.getOutMessages(stub)
 	if err != nil {
