@@ -216,6 +216,7 @@ func (broker *Broker) compensateRemove(stub shim.ChaincodeStubInterface, args []
 	if len(args) != 3 {
 		return shim.Error("incorrect number of arguments, expecting 3")
 	}
+	removed := make([]uint64, 0)
 	// 参数为fromFullService、toFullService、index（包括这个index在内需要删除的起始点）
 	fromFullService := args[0]
 	destFullService := args[1]
@@ -224,33 +225,77 @@ func (broker *Broker) compensateRemove(stub shim.ChaincodeStubInterface, args []
 		return shim.Error(fmt.Sprintf("args[2] cannot convert to uint64 number: %s", perr.Error()))
 	}
 
-	outServicePair := genServicePair(fromFullService, destFullService)
+	servicePair := genServicePair(fromFullService, destFullService)
+	inMeta, err := broker.getMap(stub, innerMeta)
+	if err != nil {
+		return shim.Error(fmt.Sprintf("get innerMeta state error: %s", err.Error()))
+	}
+
+	//源链补偿删除的同时，需要删除本侧的innerMeta、ReceiptMessages中相应的入向数据
+	if _, ok := inMeta[servicePair]; ok {
+		rMessages, err := broker.getReceiptMessages(stub)
+		if err != nil {
+			return shim.Error(fmt.Sprintf("[dest] get receipt messages: %s", err.Error()))
+		}
+		_, ok := rMessages[servicePair]
+		if !ok {
+			rMessages[servicePair] = make(map[uint64]Receipt)
+		}
+		curIdx := inMeta[servicePair]
+		if index > curIdx {
+			return shim.Error(fmt.Sprintf("[dest] invalid operation, current index:%d, expect index:%d", curIdx, index))
+		}
+		// 从入参index开始，到curIdx为止，闭区间删除rMessages
+		for cursor := index; cursor <= curIdx; cursor++ {
+			delete(rMessages[servicePair], cursor)
+			removed = append(removed, cursor)
+		}
+		var newIndex uint64
+		if index == 0 {
+			newIndex = 0
+		} else {
+			newIndex = index - 1
+		}
+
+		inMeta[servicePair] = newIndex
+		pserr := broker.putMap(stub, innerMeta, inMeta)
+		if pserr != nil {
+			return shim.Error(fmt.Sprintf("[dest] broker put innerMeta state map error: %s", pserr.Error()))
+		}
+		pserr = broker.setReceiptMessages(stub, rMessages)
+		if pserr != nil {
+			return shim.Error(fmt.Sprintf("[dest] broker put receiptMessages state map error: %s", pserr.Error()))
+		}
+		removedBytes, _ := json.Marshal(removed)
+		return shim.Success([]byte(fmt.Sprintf("[dest] compensate result: metaMap[%s]=%d, removed transactions and receiptMessages: %s",
+			servicePair, newIndex, string(removedBytes))))
+	}
+
 	outMeta, err := broker.getMap(stub, outterMeta)
 	if err != nil {
 		return shim.Error(fmt.Sprintf("get outterMeta state error: %s", err.Error()))
 	}
-	if _, ok := outMeta[outServicePair]; !ok {
-		outMeta[outServicePair] = 0
+	if _, ok := outMeta[servicePair]; !ok {
+		outMeta[servicePair] = 0
 	}
 	// curIdx是这一次删除的目标终点
-	curIdx := outMeta[outServicePair]
+	curIdx := outMeta[servicePair]
 
 	if index > curIdx {
 		return shim.Error(fmt.Sprintf("invalid operation, current index:%d, expect index:%d", curIdx, index))
 	}
 
-	removed := make([]uint64, 0)
 	oMessages, err := broker.getOutMessages(stub)
 	if err != nil {
 		return shim.Error(fmt.Sprintf("get out messages: %s", err.Error()))
 	}
-	_, ok := oMessages[outServicePair]
+	_, ok := oMessages[servicePair]
 	if !ok {
-		oMessages[outServicePair] = make(map[uint64]Event)
+		oMessages[servicePair] = make(map[uint64]Event)
 	}
 	// 从入参index开始，到curIdx为止，闭区间删除outMessage
 	for cursor := index; cursor <= curIdx; cursor++ {
-		delete(oMessages[outServicePair], cursor)
+		delete(oMessages[servicePair], cursor)
 		removed = append(removed, cursor)
 	}
 	// 直连模式下，删除transaction中所有该ibtpID相关
@@ -271,7 +316,7 @@ func (broker *Broker) compensateRemove(stub shim.ChaincodeStubInterface, args []
 	} else {
 		newIndex = index - 1
 	}
-	outMeta[outServicePair] = newIndex
+	outMeta[servicePair] = newIndex
 	pserr := broker.putMap(stub, outterMeta, outMeta)
 	if pserr != nil {
 		return shim.Error(fmt.Sprintf("broker put outterMeta state map error: %s", pserr.Error()))
@@ -282,7 +327,7 @@ func (broker *Broker) compensateRemove(stub shim.ChaincodeStubInterface, args []
 	}
 	removedBytes, _ := json.Marshal(removed)
 	return shim.Success([]byte(fmt.Sprintf("compensate result: metaMap[%s]=%d, removed transactions and outMessages: %s",
-		outServicePair, newIndex, string(removedBytes))))
+		servicePair, newIndex, string(removedBytes))))
 }
 
 func (broker *Broker) initialize(stub shim.ChaincodeStubInterface, args []string) pb.Response {
